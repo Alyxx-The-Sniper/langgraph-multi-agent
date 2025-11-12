@@ -1,0 +1,244 @@
+#app/api.py
+import uvicorn
+import uuid
+import json
+from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware 
+from pydantic import BaseModel
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+
+# Note: You must ensure 'graph' (workflow) is accessible for this to run.
+# Assuming 'graph.py' is available in the same directory.
+try:
+    from graph import workflow
+except ImportError:
+    # Placeholder for running the file without the full LangGraph context
+    print("Warning: 'graph.py' not found. Agent workflow functions will be mocked.")
+
+
+# Initialize the FastAPI app
+app = FastAPI(
+    title="LangGraph Customer Support Agent",
+    description="A multi-agent customer support system using LangGraph and FastAPI.",
+    version="1.0"
+) 
+
+# NEW: Configure and add CORS middleware to allow the HTML frontend to connect
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], # Allow all origins for simple demo/development
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+class ChatRequest(BaseModel):
+    """Request model for the chat endpoint."""
+    query: str
+    thread_id: str | None = None
+
+# --- Asynchronous Streaming Endpoint ---
+@app.post("/chat/stream")
+async def chat_stream(request: ChatRequest):
+    """
+    Main chat endpoint.
+    Streams back a JSON object for each step of the graph.
+    """
+    thread_id = request.thread_id or str(uuid.uuid4())
+    config = {"configurable": {"thread_id": thread_id}}
+    
+    # Initial input for the graph
+    inputs = {"messages": [HumanMessage(content=request.query)]}
+    
+    async def stream_generator():
+        """Pushes graph events to the client."""
+        print(f"\n🚀 Starting stream for thread: {thread_id}")
+        yield f"event: new_thread\ndata: {json.dumps({'thread_id': thread_id})}\n\n"
+        
+        # Use .astream() to stream back all intermediate steps
+        try:
+            async for step in workflow.astream(inputs, config=config, stream_mode="values"):
+                last_message = step["messages"][-1]
+                event_data = {"thread_id": thread_id}
+                
+                if isinstance(last_message, AIMessage):
+                    if last_message.tool_calls:
+                        # Supervisor is planning to call a team
+                        event = "supervisor_plan"
+                        event_data["team"] = last_message.tool_calls[0]['name']
+                        event_data["query"] = last_message.tool_calls[0]['args'].get('query', 'N/A')
+                    else:
+                        # Supervisor has a final answer
+                        event = "final_answer"
+                        event_data["content"] = last_message.content
+                
+                elif isinstance(last_message, ToolMessage):
+                    # A team has reported back to the supervisor
+                    event = "team_report"
+                    event_data["content"] = last_message.content
+                    
+                else:
+                    event = "human_initialization"
+                    event_data["content"] = str(last_message)
+
+                # Send the event in Server-Sent-Event (SSE) format
+                yield f"event: {event}\ndata: {json.dumps(event_data)}\n\n"
+        except Exception as e:
+            error_data = {"error": str(e), "message": "An error occurred during agent execution."}
+            yield f"event: error\ndata: {json.dumps(error_data)}\n\n"
+
+        print(f"\n🏁 Stream complete for thread: {thread_id}")
+
+    # Return the streaming response
+    return StreamingResponse(stream_generator(), media_type="text/event-stream")
+
+# --- Simple (non-streaming) endpoint for quick tests ---
+@app.post("/chat/invoke")
+def chat_invoke(request: ChatRequest) -> dict:
+    """
+    Simpler endpoint that just runs the graph and returns the
+    final response. Good for simple tests.
+    """
+    thread_id = request.thread_id or str(uuid.uuid4())
+    config = {"configurable": {"thread_id": thread_id}}
+    inputs = {"messages": [HumanMessage(content=request.query)]}
+    
+    print(f"\n🚀 Invoking graph for thread: {thread_id}")
+    
+    # .invoke() runs the whole graph and returns only the final state
+    final_state = workflow.invoke(inputs, config=config)
+    
+    final_answer = final_state["messages"][-1].content
+    print(f"\n🏁 Invocation complete for thread: {thread_id}")
+    
+    return {"response": final_answer, "thread_id": thread_id}
+
+# --- Health Check ---
+@app.get("/health")
+def health_check():
+    """Simple health check endpoint."""
+    return {"status": "ok"}
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# # app/main.py
+# import uvicorn
+# import uuid
+# import json
+# from fastapi import FastAPI
+# from fastapi.responses import StreamingResponse
+# from pydantic import BaseModel
+# from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+
+# # Import the compiled graph
+# from graph import workflow
+
+# # Initialize the FastAPI app
+# app = FastAPI(
+#     title="LangGraph Customer Support Agent",
+#     description="A multi-agent customer support system using LangGraph and FastAPI.",
+#     version="1.0"
+# )
+
+# class ChatRequest(BaseModel):
+#     """Request model for the chat endpoint."""
+#     query: str
+#     thread_id: str | None = None
+
+# # --- Asynchronous Streaming Endpoint ---
+# @app.post("/chat/stream")
+# async def chat_stream(request: ChatRequest):
+#     """
+#     Main chat endpoint.
+#     Streams back a JSON object for each step of the graph.
+#     """
+#     # Get or create a unique thread_id
+#     thread_id = request.thread_id or str(uuid.uuid4())
+#     config = {"configurable": {"thread_id": thread_id}}
+    
+#     # Initial input for the graph
+#     inputs = {"messages": [HumanMessage(content=request.query)]}
+    
+#     async def stream_generator():
+#         """Pushes graph events to the client."""
+#         print(f"\n🚀 Starting stream for thread: {thread_id}")
+#         yield f"event: new_thread\ndata: {json.dumps({'thread_id': thread_id})}\n\n"
+        
+#         # Use .astream() to stream back all intermediate steps
+#         async for step in workflow.astream(inputs, config=config, stream_mode="values"):
+#             last_message = step["messages"][-1]
+#             event_data = {"thread_id": thread_id}
+            
+#             if isinstance(last_message, AIMessage):
+#                 if last_message.tool_calls:
+#                     # Supervisor is planning to call a team
+#                     event = "supervisor_plan"
+#                     event_data["team"] = last_message.tool_calls[0]['name']
+#                     event_data["query"] = last_message.tool_calls[0]['args'].get('query')
+#                 else:
+#                     # Supervisor has a final answer
+#                     event = "final_answer"
+#                     event_data["content"] = last_message.content
+            
+#             elif isinstance(last_message, ToolMessage):
+#                 # A team has reported back to the supervisor
+#                 event = "team_report"
+#                 event_data["content"] = last_message.content
+                
+#             else:
+#                 event = "unknown_step"
+#                 event_data["content"] = str(last_message)
+
+#             # Send the event in Server-Sent-Event (SSE) format
+#             yield f"event: {event}\ndata: {json.dumps(event_data)}\n\n"
+
+#         print(f"\n🏁 Stream complete for thread: {thread_id}")
+
+#     # Return the streaming response
+#     return StreamingResponse(stream_generator(), media_type="text/event-stream")
+
+# # --- Simple (non-streaming) endpoint for quick tests ---
+# @app.post("/chat/invoke")
+# def chat_invoke(request: ChatRequest) -> dict:
+#     """
+#     Simpler endpoint that just runs the graph and returns the
+#     final response. Good for simple tests.
+#     """
+#     thread_id = request.thread_id or str(uuid.uuid4())
+#     config = {"configurable": {"thread_id": thread_id}}
+#     inputs = {"messages": [HumanMessage(content=request.query)]}
+    
+#     print(f"\n🚀 Invoking graph for thread: {thread_id}")
+    
+#     # .invoke() runs the whole graph and returns only the final state
+#     final_state = workflow.invoke(inputs, config=config)
+    
+#     final_answer = final_state["messages"][-1].content
+#     print(f"\n🏁 Invocation complete for thread: {thread_id}")
+    
+#     return {"response": final_answer, "thread_id": thread_id}
+
+# # --- Health Check ---
+# @app.get("/health")
+# def health_check():
+#     """Simple health check endpoint."""
+#     return {"status": "ok"}
+
+# # # --- Add a main block to run the server ---
+# # if __name__ == "__main__":
+# #     uvicorn.run(api, host="0.0.0.0", port=8000)

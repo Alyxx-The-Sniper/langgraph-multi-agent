@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LangGraph Agent Streaming Chat Demo</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom scrollbar for chat history */
+        #chat-history::-webkit-scrollbar {
+            width: 6px;
+        }
+        #chat-history::-webkit-scrollbar-thumb {
+            background: #a0aec0; /* Gray 400 */
+            border-radius: 3px;
+        }
+        #chat-history::-webkit-scrollbar-track {
+            background: #f7fafc; /* Gray 50 */
+        }
+        /* Use Inter font globally */
+        body {
+            font-family: 'Inter', sans-serif;
+            min-height: 100vh;
+        }
+        /* Style for the pre-wrap content, crucial for displaying agent steps nicely */
+        .agent-content pre {
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 flex items-center justify-center p-4 sm:p-6">
+    <div id="app" class="w-full max-w-2xl bg-white shadow-xl rounded-2xl flex flex-col h-[90vh] overflow-hidden">
+        <!-- Header -->
+        <header class="p-4 border-b border-gray-200 bg-indigo-600 rounded-t-2xl">
+            <h1 class="text-xl font-bold text-white">
+                Multi-Agent Chat Demo
+            </h1>
+            <p id="thread-display" class="text-sm text-indigo-200 mt-1">Thread ID: Pending...</p>
+        </header>
+
+        <!-- Chat History -->
+        <div id="chat-history" class="flex-grow p-4 space-y-4 overflow-y-auto">
+            <div class="flex justify-start">
+                <!-- MODIFICATION: Updated welcome bubble with more info -->
+                <div class="bg-indigo-100 text-indigo-800 p-3 rounded-xl rounded-bl-none max-w-lg shadow-md"> <!-- Increased max-width from max-w-xs -->
+                    <p class="font-medium">Hello! I'm a multi-agent system powered by LangGraph.</p>
+                    <!-- Added your demo details as a list -->
+                    <ul class="list-disc list-inside text-sm mt-2 space-y-1">
+                        <li>Connected to Slack & Airtable for concern tickets (Notification & Database).</li>
+                        <li>Uses agents as tools (and those agents have their own tools).</li>
+                        <li>For demo queries (orders, refunds, payment details), please use tracking numbers 1-5.</li>
+                        <li>Example: Whats the status of my order?, I want to change my payment method, etc..</li>
+                    </ul>
+                </div>
+            </div>
+            <!-- Messages will be appended here -->
+        </div>
+
+        <!-- Input Form -->
+        <form id="chat-form" class="p-4 border-t border-gray-200 bg-white flex items-center gap-3">
+            <input 
+                type="text" 
+                id="user-query" 
+                placeholder="Type your question here..." 
+                required 
+                class="flex-grow p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition duration-150"
+            />
+            <button 
+                type="submit" 
+                id="send-button"
+                class="bg-indigo-600 text-white p-3 rounded-xl hover:bg-indigo-700 transition duration-150 shadow-md flex items-center justify-center disabled:bg-indigo-400"
+            >
+                <svg id="send-icon" class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
+                <div id="loading-spinner" class="hidden w-6 h-6 border-4 border-t-4 border-white border-opacity-30 rounded-full animate-spin"></div>
+            </button>
+        </form>
+    </div>
+
+    <script>
+        // IMPORTANT: Replace with your actual FastAPI server URL
+        const API_URL = "http://localhost:8000";
+        const CHAT_STREAM_ENDPOINT = `${API_URL}/chat/stream`;
+
+        const chatForm = document.getElementById('chat-form');
+        const chatHistory = document.getElementById('chat-history');
+        const userQueryInput = document.getElementById('user-query');
+        const sendButton = document.getElementById('send-button');
+        const sendIcon = document.getElementById('send-icon');
+        const loadingSpinner = document.getElementById('loading-spinner');
+        const threadDisplay = document.getElementById('thread-display');
+
+        let threadId = null;
+        let isStreaming = false;
+
+        /**
+         * Utility to display status messages and agent steps
+         */
+        function appendMessage(sender, content) {
+            const isUser = sender === 'user';
+            const isAI = sender === 'ai';
+            const isPlan = sender === 'plan';
+            const isReport = sender === 'report';
+            const isSystem = sender === 'system';
+
+            const alignmentClass = isUser ? 'justify-end' : 'justify-start';
+            
+            let bubbleClasses = '';
+            let contentClasses = '';
+            let iconHtml = '';
+
+            if (isUser) {
+                bubbleClasses = 'bg-indigo-600 text-white rounded-tr-none';
+                contentClasses = 'max-w-xs sm:max-w-md';
+            } else if (isAI) {
+                bubbleClasses = 'bg-gray-700 text-white rounded-bl-none';
+                contentClasses = 'max-w-xs sm:max-w-md font-medium';
+                iconHtml = '<svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 13.255A23.513 23.513 0 0112 15c-3.138 0-6.208-.66-9-1.745M12 4.5v15M20.25 7.5l-4 4m0 0H8.75m11.5 0l-4-4"></path></svg>';
+            } else if (isPlan) {
+                // Agent decision/planning step
+                bubbleClasses = 'bg-yellow-100 text-yellow-800 border border-yellow-300 text-sm';
+                contentClasses = 'max-w-lg italic font-mono';
+                iconHtml = '<svg class="w-4 h-4 mr-2 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>';
+            } else if (isReport) {
+                // Team/Tool output report
+                bubbleClasses = 'bg-green-100 text-green-800 border border-green-300 text-xs';
+                contentClasses = 'max-w-lg';
+                iconHtml = '<svg class="w-4 h-4 mr-2 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2c-2.335 0-4.59.837-6.522 2.383-2.193 1.765-3.528 4.38-3.475 7.15c.011 1.748.513 3.425 1.488 4.87l3.393-3.393M12 22a10 10 0 100-20 10 10 0 000 20z"></path></svg>';
+            } else if (isSystem) {
+                 bubbleClasses = 'bg-red-100 text-red-800 border border-red-300 text-sm';
+                 contentClasses = 'max-w-lg';
+            }
+
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `flex ${alignmentClass}`;
+            
+            const contentDiv = document.createElement('div');
+            contentDiv.className = `p-3 rounded-xl shadow-md transition duration-300 ${bubbleClasses} ${contentClasses} flex items-start agent-content`;
+            
+            // Use <pre> for everything except user messages to preserve formatting/newlines
+            const formattedContent = isUser ? `<p>${content}</p>` : `<pre>${content}</pre>`;
+
+            contentDiv.innerHTML = iconHtml + formattedContent;
+
+            messageDiv.appendChild(contentDiv);
+            chatHistory.appendChild(messageDiv);
+            
+            // Auto-scroll to the bottom
+            chatHistory.scrollTop = chatHistory.scrollHeight;
+            return messageDiv;
+        }
+
+        /**
+         * Core logic to handle the fetch POST stream and parse SSE format manually.
+         */
+        async function handleStream(query) {
+            // 1. Set loading state
+            isStreaming = true;
+            sendButton.disabled = true;
+            sendIcon.classList.add('hidden');
+            loadingSpinner.classList.remove('hidden');
+
+            try {
+                const response = await fetch(CHAT_STREAM_ENDPOINT, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query: query, thread_id: threadId }),
+                });
+
+                if (!response.ok || !response.body) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder('utf-8');
+                let buffer = '';
+
+                // Loop to read the stream chunks
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    let eventEnd;
+
+                    // Manually parse Server-Sent Event (SSE) format
+                    while ((eventEnd = buffer.indexOf('\n\n')) !== -1) {
+                        const eventBlock = buffer.substring(0, eventEnd);
+                        buffer = buffer.substring(eventEnd + 2);
+
+                        if (eventBlock.trim() === '') continue;
+
+                        let event = null;
+                        let data = null;
+
+                        // Parse 'event: X' and 'data: Y' lines
+                        eventBlock.split('\n').forEach(line => {
+                            if (line.startsWith('event: ')) {
+                                event = line.substring(7).trim();
+                            } else if (line.startsWith('data: ')) {
+                                data = line.substring(6).trim();
+                            }
+                        });
+
+                        if (event && data) {
+                            try {
+                                const payload = JSON.parse(data);
+                                handleEvent(event, payload);
+                            } catch (e) {
+                                console.error('Error parsing JSON data:', e, data);
+                            }
+                        }
+                    }
+                }
+
+            } catch (error) {
+                console.error("Stream Fetch Error:", error);
+                // Handle the error displayed in the front end
+                appendMessage('system', `Connection or Stream Error: ${error.message}. Please check your FastAPI server console for details.`);
+            } finally {
+                // 2. Clear loading state
+                isStreaming = false;
+                sendButton.disabled = false;
+                sendIcon.classList.remove('hidden');
+                loadingSpinner.classList.add('hidden');
+            }
+        }
+
+        /**
+         * Handles the parsed SSE event data and updates the UI.
+         */
+        function handleEvent(event, data) {
+            if (event === 'new_thread') {
+                threadId = data.thread_id;
+                threadDisplay.textContent = `Thread ID: ${threadId}`;
+            } 
+            else if (event === 'supervisor_plan') {
+                const content = `AGENT DECISION: \nCalling the ${data.team} team to execute the query:\n"${data.query}"`;
+                appendMessage('plan', content);
+            } 
+            else if (event === 'team_report') {
+                const content = `TEAM REPORT:\n${data.content}`;
+                appendMessage('report', content);
+            } 
+            else if (event === 'final_answer') {
+                appendMessage('ai', data.content);
+            } 
+            else if (event === 'error') {
+                 const content = `EXECUTION ERROR: ${data.message} (${data.error})`;
+                 appendMessage('system', content);
+            }
+        }
+
+        /**
+         * Handles the form submission
+         */
+        chatForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const query = userQueryInput.value.trim();
+            if (!query || isStreaming) return;
+
+            // 1. Display user message
+            appendMessage('user', query);
+
+            // 2. Start the streaming process
+            userQueryInput.value = '';
+            handleStream(query);
+        });
+
+    </script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+# Core
+langchain
+langgraph
+langchain-openai
+langchain-community
+
+# App Server
+fastapi
+uvicorn[standard]
+
+# Tools
+requests
+airtable-python-wrapper
+
+# Config
+pydantic-settings
+python-dotenv
