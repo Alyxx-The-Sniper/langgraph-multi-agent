@@ -1,6 +1,6 @@
 # app/llm.py
 from langchain_community.chat_models import ChatDeepInfra
-from config import settings
+from .config import settings
 
 # Initialize your LLM here, pulling the key from config
 llm = ChatDeepInfra(

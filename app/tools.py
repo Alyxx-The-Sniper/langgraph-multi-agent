@@ -1,13 +1,11 @@
 # app/tools.py
 import requests
 import random
-import json
-import os
 from airtable import Airtable
 from langchain_core.tools import tool
 
 # Import the settings instance
-from config import settings
+from .config import settings
 
 # --- Initialize Airtable Client ---
 try:

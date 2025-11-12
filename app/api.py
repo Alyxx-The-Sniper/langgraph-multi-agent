@@ -1,20 +1,28 @@
-#app/api.py
-import uvicorn
 import uuid
 import json
+import os
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse, FileResponse
-from fastapi.middleware.cors import CORSMiddleware 
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 
 # Note: You must ensure 'graph' (workflow) is accessible for this to run.
-# Assuming 'graph.py' is available in the same directory.
+# Import the compiled graph
 try:
-    from graph import workflow
-except ImportError:
-    # Placeholder for running the file without the full LangGraph context
-    print("Warning: 'graph.py' not found. Agent workflow functions will be mocked.")
+    from .graph import workflow #use relative path
+except ImportError as e:
+    print(f"⚠️  graph.py not found (Error: {e}). Using mock workflow.")
+    
+    # --- FIX: Added the complete MockWorkflow fallback ---
+    class MockWorkflow:
+        async def astream(self, *args, **kwargs):
+            yield {"messages": [AIMessage(content="Mock response: Workflow not initialized.")]}
+        def invoke(self, *args, **kwargs):
+            return {"messages": [AIMessage(content="Mock response: Workflow not initialized.")]}
+    
+    workflow = MockWorkflow() # Assign the mock to the workflow variable
+    # ----------------------------------------------------
 
 
 # Initialize the FastAPI app
@@ -23,6 +31,21 @@ app = FastAPI(
     description="A multi-agent customer support system using LangGraph and FastAPI.",
     version="1.0"
 ) 
+
+
+# --- index.html ---
+# Get the absolute path to the directory containing this file
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+@app.get("/")
+async def get_index():
+    """Serves the frontend HTML file."""
+    # NEW: Construct the full path to index.html
+    static_file_path = os.path.join(BASE_DIR, "index.html")
+    if not os.path.exists(static_file_path):
+        return {"error": "index.html not found"}, 404
+    return FileResponse(static_file_path)
+
 
 # NEW: Configure and add CORS middleware to allow the HTML frontend to connect
 app.add_middleware(
@@ -79,8 +102,12 @@ async def chat_stream(request: ChatRequest):
                     event_data["content"] = last_message.content
                     
                 else:
-                    event = "human_initialization"
-                    event_data["content"] = str(last_message)
+                    # Filter out the initial human message from showing as "unknown"
+                    if not isinstance(last_message, HumanMessage):
+                        event = "unknown_step"
+                        event_data["content"] = str(last_message)
+                    else:
+                        continue # Skip the initial human message
 
                 # Send the event in Server-Sent-Event (SSE) format
                 yield f"event: {event}\ndata: {json.dumps(event_data)}\n\n"
@@ -114,23 +141,13 @@ def chat_invoke(request: ChatRequest) -> dict:
     
     return {"response": final_answer, "thread_id": thread_id}
 
-############################################################################
-# --- index.html ---
+# --- Health Check ---
+@app.get("/health")
+def health_check():
+    """Simple health check endpoint."""
+    return {"status": "ok"}
 
-# Get the absolute path to the directory containing this file
-import os
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-@app.get("/")
-async def get_index():
-    """Serves the frontend HTML file."""
-    # NEW: Construct the full path to index.html
-    static_file_path = os.path.join(BASE_DIR, "index.html")
-    if not os.path.exists(static_file_path):
-        return {"error": "index.html not found"}, 404
-    return FileResponse(static_file_path)
-
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
-
+# REMOVED the `if __name__ == "__main__":` block
+# to prevent import errors.
+# ALWAYS run locally from the root folder with:
+# uvicorn app.api:app --reload

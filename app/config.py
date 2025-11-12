@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     SLACK_WEBHOOK_URL: str
     
     model_config = ConfigDict(
-        env_file=".env",
+        env_file="app/.env",
         env_file_encoding="utf-8"
     )
 
