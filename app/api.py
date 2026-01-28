@@ -37,6 +37,7 @@ app = FastAPI(
 # Get the absolute path to the directory containing this file
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# home page
 @app.get("/")
 async def get_index():
     """Serves the frontend HTML file."""
