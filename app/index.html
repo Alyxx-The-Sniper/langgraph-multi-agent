@@ -70,7 +70,8 @@
 
     <script>
         // const API_URL = "http://127.0.0.1:8000"; // Ensure this matches your Uvicorn host --> For local deployment
-        const API_URL = "langgraph-multi-agent.up.railway.app"
+        const API_URL = "https://langgraph-multi-agent.up.railway.app"; 
+        const CHAT_STREAM_ENDPOINT = `${API_URL}/chat/stream`;
         const chatForm = document.getElementById('chat-form');
         const chatHistory = document.getElementById('chat-history');
         const userInput = document.getElementById('user-input');
